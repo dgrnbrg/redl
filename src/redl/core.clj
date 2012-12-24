@@ -268,3 +268,103 @@
      :kind "t"
      :menu (pr-str (:arglists var-or-ns (symbol "")))
      }))
+
+;Repl id maps to
+;- which ns to eval wihin
+;- a promise to which the next form to be evaled should be delivered
+;- a handle to the actual thread so that it can be killed
+;
+;API:
+;- a function to create a new repl, add it to the mapping, and return the id
+;- a function to evaluate a form on a repl
+;- a function to interrupt evaluation on a given repl?
+;- a function to stop/kill a given repl?
+
+(defn eval-with-state
+  "Evaluates a form with a given state. State is a map containing the
+  repl state, which has the following keys: `:*1`, `:*2`, `:*3`, `:*e`,
+  and `:ns`. It will return the updated state, along with the extra keys
+  `:out`, `:err`, and `:result`, which will be bound to all the stdout and
+  stderr of the evaluated form, and it's value. The value will also be
+  included `pprint`ed in stdout for display convenience."
+  [form state]
+  (let [out-writer (java.io.StringWriter.)
+        err-writer (java.io.StringWriter.)]
+    (binding [*ns* *ns*
+              *out* (java.io.PrintWriter. out-writer)
+              *err* (java.io.PrintWriter. err-writer)
+              *1 (:*1 state)
+              *2 (:*2 state)
+              *3 (:*3 state)
+              *e (:*e state)]
+      (let [ex (atom nil)
+            result (try
+                     (in-ns (:ns state))
+                     (doto (eval form)
+                       pprint)
+                     (catch Throwable t
+                       (doto (clojure.main/repl-exception t)
+                         (.printStackTrace *err*))
+                       (reset! ex t)))]
+        (->
+          (if-let [e @ex]
+            (assoc state :*e e :result ::error)
+            (assoc state
+                   :result result
+                   :*1 result
+                   :*2 *1
+                   :*3 *2))
+          (assoc 
+            :ns (ns-name *ns*)
+            :out (str out-writer)
+            :err (str err-writer)))))) )
+
+(defn repl-entry-point
+  "Creates a repl thread and returns the input/output promise pair.
+  When an input is delivered, wait on the output promise to get a
+  triple of `[result input' output']`"
+  [ns]
+  (let [input (atom (promise))
+        output (atom (promise))]
+    [(fn []
+       (loop [state {:*1 nil
+                     :*2 nil
+                     :*3 nil
+                     :ns ns
+                     :*e nil}]
+         (let [state' (eval-with-state @@input state)]
+           (deliver @output state')
+           (reset! input (promise))
+           (reset! output (promise))
+           (recur state'))))
+     input output]))
+
+(def repls (atom {}))
+(def repl-id (atom 0))
+
+(defn make-repl
+  ([]
+   (make-repl 'user))
+  ([ns]
+   (let [my-id (swap! repl-id inc)
+         [replf input output] (repl-entry-point ns)
+         thread (doto (Thread. replf)
+                  (.setName (str "redl-" my-id))
+                  .start)
+         data {:input input
+               :output output
+               :id my-id}]
+     (swap! repls assoc my-id data)
+     my-id)))
+
+(defn repl-eval
+  [repl form]
+  (let [{:keys [input output id]} (@repls repl)
+        _ (deliver @input form)
+        result (deref @output 1000 nil)
+        result (select-keys result [:out :err :result])]
+    result))
+
+(def my-repl (make-repl))
+
+(repl-eval my-repl '(+ 1 2 3))
