@@ -1,6 +1,8 @@
 (ns redl.core
+  (:require clojure.main)
   (:use [clojure.string :only [split]]
-        [complete.core :only [top-level-classes nested-classes]]))
+        [complete.core :only [top-level-classes nested-classes]]
+        [clojure.pprint :only [pprint]]))
 
 (defn common-subseq-score
   "Takes 2 seqs, and checks for common subseq. Allows any characters to be
@@ -118,6 +120,12 @@
             v]))
     (filter first)))
 
+(defn extract-param-types
+  "Takes a `Constructor` or `Method` and returns a vector
+  of the arguments."
+  [target]
+  (mapv (comp symbol #(.getSimpleName %)) (.getParameterTypes target)))
+
 (defn class-matches
   "Takes an ns and a pattern, and returns the classes that
   match that pattern in that ns."
@@ -126,7 +134,15 @@
           nested-classes top-level-classes)
     (concat (keys (ns-imports ns)))
     (map (juxt identity (constantly {:class true})))
-    (fuzzy-match-pairs pattern)) )
+    (fuzzy-match-pairs pattern)
+    (map (fn [[score class-name desc]]
+           (let [class (ns-resolve ns (symbol class-name))]
+             [score class-name
+              (assoc desc
+                     :arglists (->> (.getConstructors class)
+                                 (map extract-param-types)
+                                 (set)
+                                 (sort)))])))))
 
 (defn methods->completions
   "Takes a seq of Method objects and returns a seq of pairs
@@ -135,7 +151,7 @@
   [methods]
   (->> (for [method methods]
          {:method (.getName method)
-          :argtypes (mapv (comp symbol #(.getSimpleName %)) (.getParameterTypes method))})
+          :argtypes (extract-param-types method)})
     (group-by :method) 
     (map (fn [[name bodies]]
            [name {:method true
@@ -250,4 +266,5 @@
     (:class var-or-ns)
     {:word name
      :kind "t"
+     :menu (pr-str (:arglists var-or-ns (symbol "")))
      }))
