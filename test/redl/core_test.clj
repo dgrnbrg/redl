@@ -1,6 +1,7 @@
 (ns redl.core-test
   (:use expectations
-        redl.core))
+        redl.core)
+  (:import java.lang.Thread))
 
 (expect
   [0 0 0 0]
@@ -112,3 +113,31 @@
   nil
   (some (comp (partial = "clojure.java.io") first)
         (completions 'redl.core "c.")))
+
+(expect
+  "java.awt.geom.Rectangle2D" 
+  (in (map first (completions 'redl.core "j.a..Rct"))))
+
+(expect
+  "java.awt.geom.Rectangle2D$Float" 
+  (in (map first (completions 'redl.core "j.a..Rct$"))))
+
+(expect
+  "Math/PI"
+  (in (map first (completions 'redl.core "M/P"))))
+
+(expect
+  "java.lang.Math/PI"
+  (in (map first (completions 'redl.core "j..M/P"))))
+
+(expect
+  "java.lang.Math/cos"
+  (in (map first (completions 'redl.core "j..M/cos"))))
+
+(expect
+  "Math/atan2"
+  (in (map first (completions 'redl.core "M/atan2"))))
+
+(expect
+  ".start"
+  (in (map first (completions 'redl.core-test ".st"))))

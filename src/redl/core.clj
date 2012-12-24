@@ -1,5 +1,6 @@
 (ns redl.core
-  (:use [clojure.string :only [split]]))
+  (:use [clojure.string :only [split]]
+        [complete.core :only [top-level-classes nested-classes]]))
 
 (defn common-subseq-score
   "Takes 2 seqs, and checks for common subseq. Allows any characters to be
@@ -94,82 +95,129 @@
                   (Math/pow (Math/abs head) general-power)))
         [score  match]))))
 
+(defn nses-for-ns
+  "Returns a map of string->namespace mappings for a given
+  namespace, including all qualified and aliases nses."
+  [ns]
+  (into (ns-aliases ns)
+        (map (juxt ns-name identity) (all-ns))))
+
+(defn fuzzy-match-pairs
+  "Takes a seq of pairs of `Named` names and descriptive objects,
+  and returns a seq of triples where the elements are a score vector,
+  string name, and descriptive object (in that order). If a pair
+  didn't fuzzy match, it is not included in the output."
+  [pattern pairs]
+  (->> pairs
+    (map (fn [[k v]]
+           [(common-subseq-score
+              pattern
+              (name k)
+              (partial = \.))
+            (name k)
+            v]))
+    (filter first)))
+
+(defn class-matches
+  "Takes an ns and a pattern, and returns the classes that
+  match that pattern in that ns."
+  [ns pattern]
+  (->> @(if (.contains pattern "$")
+          nested-classes top-level-classes)
+    (concat (keys (ns-imports ns)))
+    (map (juxt identity (constantly {:class true})))
+    (fuzzy-match-pairs pattern)) )
+
+(defn methods->completions
+  "Takes a seq of Method objects and returns a seq of pairs
+  that can be fuzzy-matched and include additional metadata,
+  such as argument lists."
+  [methods]
+  (->> (for [method methods]
+         {:method (.getName method)
+          :argtypes (mapv (comp symbol #(.getSimpleName %)) (.getParameterTypes method))})
+    (group-by :method) 
+    (map (fn [[name bodies]]
+           [name {:method true
+                  :arglists (sort (set (map :argtypes bodies)))}]))))
+
+(defn unscoped-completions
+  "Takes a namespace and a pattern without a forward slash,
+  and returns a list of triples, where each triple is a
+  [completion score, string name, descriptive object] for
+  the possible completions."
+  [ns pattern] 
+  (let [compiled-pattern (str->pattern pattern)
+        candidates (-> (nses-for-ns ns)
+                     (into (ns-map ns))
+                     (into (when (= (first pattern) \.)
+                             (->> (for [class (vals (ns-imports ns))
+                                        method (.getMethods class)]
+                                    method)
+                               methods->completions
+                               (map (fn [[k v]]
+                                      [(str \. k) v]))))))
+        matches (fuzzy-match-pairs compiled-pattern candidates)
+        class-matches (class-matches ns pattern)
+        sorted (sort-by (fn [[score n]]
+                          (score-match score n))
+                        (concat class-matches matches))]
+    sorted))
+
+(defn static? [^java.lang.reflect.Member member]
+  (java.lang.reflect.Modifier/isStatic (.getModifiers member)))
+
+(defn scoped-completions
+  "Takes a namespace and a pattern with a forward slash,
+  and returns a list of triples where each triple is a
+  [completion score, string name, descriptive object] for
+  the possible completions."
+  [ns pattern]
+  (let [slash-index (.indexOf pattern "/")
+        ns-pattern (str->pattern (.substring pattern 0 slash-index))
+        whole-pattern (str->pattern pattern)
+        candidate-nses (->> (nses-for-ns ns)
+                         (fuzzy-match-pairs ns-pattern)
+                         (map next))
+        candidate-vars (->> candidate-nses
+                         (mapcat (fn [[sym ns]]
+                                   (let [ns-name (name sym)]
+                                     (->> (ns-publics ns)
+                                       (map (fn [[k v]]
+                                              [(str ns-name \/ (name k)) v]))
+                                       (fuzzy-match-pairs whole-pattern))))))
+        candidate-classes (class-matches ns ns-pattern)
+        candidate-members (->> candidate-classes
+                            (mapcat (fn [[_ class-name]]
+                                      (let [class (ns-resolve ns (symbol class-name))
+                                            fields (->> (.getDeclaredFields class)
+                                                     (filter static?)
+                                                     (map (juxt #(str class-name \/ (.getName %))
+                                                                (constantly {:field true}))))
+                                            methods (->> (.getMethods class)
+                                                      (filter static?)
+                                                      methods->completions
+                                                      (map (fn [[k v]]
+                                                             [(str class-name \/ k) v])))]
+                                        (fuzzy-match-pairs whole-pattern
+                                                           (concat fields methods))))))
+        sorted (sort-by (fn [[score n]] (score-match score n))
+                        (concat candidate-members candidate-vars))]
+    sorted))
+
 (defn completions
   "Finds fuzzy completions for a pattern in the given namespace.
 
   Could return a namespace, an alias, a var from the ns's map,
   or a namespace or alias-qualified var."
   [ns pattern]
-  (let [split-pattern (split pattern #"/")
-        split-pattern (if (and (= (count split-pattern) 1)
-                               (not= pattern (first split-pattern)))
-                        (conj split-pattern "")
-                        split-pattern)
-        publics (ns-publics ns)
-        aliases (ns-aliases ns)
-        nses (all-ns)]
-    (map
-      next
-      (condp = (count split-pattern)
-        ;Namespace, aliases, or var
-        1
-        (let [pattern (str->pattern pattern)
-              candidates (into aliases
-                               (concat
-                                 (map (juxt ns-name identity) nses)
-                                 (ns-map ns)))
-              matches (->> candidates
-                        (map (fn [[k v]]
-                               [(common-subseq-score
-                                  pattern
-                                  (name k)
-                                  (partial = \.))
-                                (name k)
-                                v]))
-                        (filter
-                          (fn [[score k v]]
-                            score)))
-              sorted (sort-by (fn [[score n]]
-                                (score-match score n)) matches)]
-          sorted)
-
-        ;qualified var
-        2
-        (let [ns-pattern (str->pattern (first split-pattern))
-              whole-pattern (str->pattern pattern)
-              candidate-nses (->> (into aliases
-                                        (map (juxt ns-name identity) nses))
-                               (map (fn [[sym ns]]
-                                      [(common-subseq-score
-                                         ns-pattern
-                                         (name sym)
-                                         (partial = \.))
-                                       sym
-                                       ns]))
-                               (filter first)
-                               (map next))
-              candidate-vars (->> candidate-nses
-                               (mapcat (fn [[sym ns]]
-                                         (let [ns-name (name sym)]
-                                           (map (fn [[k v]]
-                                                  (let [var-name (name k)
-                                                        completion (str
-                                                                     ns-name \/
-                                                                     var-name)]
-                                                    [(common-subseq-score
-                                                       whole-pattern
-                                                       completion
-                                                       #{\. \/})
-                                                     completion
-                                                     v])) (ns-publics ns)))))
-                               (filter first)
-                               (sort-by (fn [[score n]] (score-match score n))))]
-          candidate-vars)
-
-        ;invalid
-        (throw (ex-info (str "too many pattern parts" split-pattern) {}))
-        ))
-    ))
+  (map
+    next
+    (if-not (.contains pattern "/")
+      ;Namespace, aliases, or var
+      (unscoped-completions ns pattern)
+      ;qualified var
+      (scoped-completions ns pattern))))
 
 (defn ->vim-omnicomplete
   "Pass the pair of `[name var-or-ns]` to this function
@@ -188,5 +236,18 @@
      :kind "t"
      :info "" ;TODO: include ns doc
      }
-    :else
-    (throw (ex-info "Not a var or ns" {:bad var-or-ns}))))
+    ;Static member of java class
+    (:method var-or-ns)
+    {:word name
+     :kind "f"
+     :menu (pr-str (:arglists var-or-ns (symbol "")))
+     }
+    (:field var-or-ns)
+    {:word name
+     :kind "m"
+     }
+    ;plain java class
+    (:class var-or-ns)
+    {:word name
+     :kind "t"
+     }))
