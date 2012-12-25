@@ -147,7 +147,8 @@
   (expect [nil nil nil nil]
           (:result (repl-eval my-repl '[*1 *2 *3 *e])))
 
-  (expect {:result [3 2 1]}
+  (expect {:result [3 2 1]
+           :ns 'user}
           (in (do
                 (repl-eval my-repl '(.foo bar))
                 (repl-eval my-repl 1)
@@ -158,7 +159,9 @@
   (expect (not (nil? (:result (repl-eval my-repl '*e)))))
 
   ;Change ns to avoid syntax-quoting confusion in test
-  (expect (repl-eval my-repl `(in-ns 'redl.core-test)))
+  (expect
+    {:ns 'redl.core-test}
+    (in (repl-eval my-repl `(in-ns 'redl.core-test))))
 
   ;Basic functionality
   (expect {:result 12 :repl-depth 0}

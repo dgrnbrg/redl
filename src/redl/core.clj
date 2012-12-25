@@ -393,6 +393,8 @@
   (try
     (binding [*repl-depth* (inc *repl-depth*)]
       (deliver @repl-output {:out "Encountered break, waiting for input..."
+                             :err ""
+                             :ns (ns-name *ns*)
                              :repl-depth *repl-depth*})
       (reset! repl-input (promise)) 
       (reset! repl-output (promise)) 
@@ -458,6 +460,5 @@
   [repl form]
   (let [{:keys [input output id]} (@repls repl)
         _ (deliver @input form)
-        result (deref @output 8000 {:err "Repl thread timed out"})
-        result (select-keys result [:out :err :result :repl-depth])]
+        result (deref @output 8000 {:err "Repl thread timed out"})]
     result))
