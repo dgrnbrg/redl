@@ -141,3 +141,110 @@
 (expect
   ".start"
   (in (map first (completions 'redl.core-test ".st"))))
+
+(let [my-repl (make-repl)]
+  ;Ensure repl has *1, *2, *3, and *e set up
+  (expect [nil nil nil nil]
+          (:result (repl-eval my-repl '[*1 *2 *3 *e])))
+
+  (expect {:result [3 2 1]}
+          (in (do
+                (repl-eval my-repl '(.foo bar))
+                (repl-eval my-repl 1)
+                (repl-eval my-repl 2)
+                (repl-eval my-repl 3)
+                (repl-eval my-repl '[*1 *2 *3]))))
+
+  (expect (not (nil? (:result (repl-eval my-repl '*e)))))
+
+  ;Change ns to avoid syntax-quoting confusion in test
+  (expect (repl-eval my-repl `(in-ns 'redl.core-test)))
+
+  ;Basic functionality
+  (expect {:result 12 :repl-depth 0}
+          (in (repl-eval my-repl `(* 3 4))))
+  
+  ;Test that debug repl nests and resumes correct
+  (expect {:out "Encountered break, waiting for input..."
+           :repl-depth 1}
+          (in (repl-eval my-repl `(- (break) 10))))
+
+  ;Stays at the current level if no change is made
+  (expect {:out "3\n" :repl-depth 1}
+          (in (repl-eval my-repl 3)))
+
+  ;Go to deeper levl
+  (expect {:out "Encountered break, waiting for input..."
+           :repl-depth 2}
+          (in (repl-eval my-repl `(println (break)))))
+
+  ;Return from inner level
+  (expect {:out "hello\nnil\n" :repl-depth 1}
+          (in (repl-eval my-repl `(continue "hello"))))
+
+  ;Return from outer level
+  (expect {:result 7 :repl-depth 0}
+          (in (repl-eval my-repl `(continue 17))))
+
+  ;Test local binding
+  (expect {:out "Encountered break, waiting for input..."}
+          (in (repl-eval my-repl '(let [x 3 y 7] (break 5)))))
+
+  (expect {:result 21}
+          (in (repl-eval my-repl '(continue (* x y)))))
+
+  ;Test default return value logic
+  (expect {:out "Encountered break, waiting for input..."}
+          (in (repl-eval my-repl '(let [x 3 y 7] (break 5)))))
+
+  (expect {:result 5}
+          (in (repl-eval my-repl '(continue))))
+
+  (expect {:out "Encountered break, waiting for input..."}
+          (in (repl-eval my-repl '(break))))
+
+  (expect {:result nil}
+          (in (repl-eval my-repl '(continue))))
+
+  ;Ensure locals shadow correctly
+  (expect {:out "Encountered break, waiting for input..."}
+          (in (repl-eval my-repl '(let [x 3 y 7] (break 5)))))
+
+  (expect {:out "Encountered break, waiting for input..."}
+          (in (repl-eval my-repl '(let [x 2 y 2] (break)))))
+
+  ;Inner is 2 + 2
+  (expect {:result 4}
+          (in (repl-eval my-repl '(continue (+ x y)))))
+
+  ;Outer is 3 + 7
+  (expect {:result 10}
+          (in (repl-eval my-repl '(continue (+ x y)))))
+
+  ;Ensure continue gives sane error message
+  (expect #"Cannot call continue when not in a break statement!"
+          (-> (repl-eval my-repl '(continue))
+            :err))
+  
+  (expect #"Cannot call continue when not in a break statement!"
+          (-> (repl-eval my-repl '(continue))
+            :err)))
+
+;Now, we try interleaving 2 repls to confirm no disruption occurs
+(let [repl1 (make-repl)
+      repl2 (make-repl)]
+  (expect {:out "Encountered break, waiting for input..."
+           :repl-depth 1}
+          (in (repl-eval repl1 '(let [x 3 y 4]
+                                  (redl.core/break)))))
+
+  (expect {:out "Encountered break, waiting for input..."
+           :repl-depth 1}
+          (in (repl-eval repl2 '(let [x 6 z 7]
+                                  (redl.core/break)))))
+
+  (expect {:result 7}
+          (in (repl-eval repl1 '(+ x y))))
+
+  (expect {:result 13}
+          (in (repl-eval repl2 '(+ x z)))))
