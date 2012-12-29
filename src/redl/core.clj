@@ -1,6 +1,9 @@
 (ns redl.core
-  (:require clojure.main)
+  (:require clojure.main
+            reply.hacks.printing
+            clj-stacktrace.repl) 
   (:use [clojure.string :only [split]]
+        [clojure.repl :only [pst]]
         [complete.core :only [top-level-classes nested-classes]]
         [clojure.pprint :only [pprint]]))
 
@@ -79,23 +82,20 @@
         final))))
 
 (defn score-match
-  "Takes a match score and returns a numeric value.
+  "Takes a score vector and a tiebreaker,
+  and returns a value that can be sorted on.
   
   Ignores the last element of the score vec, since
-  this heuristic doesn't penalize a long tail.
-  
-  If 2 scores are equal, they follow alphabetical order"
-  [score-vec match]
-  (let [general-power 2
-        depth-penalty 1.5]
+  this heuristic doesn't penalize a long tail."
+  [score-vec tiebreak]
+  (let [general-power 2]
     (loop [[head & tail] (butlast score-vec)
-           penalty 1
            score 0]
       (if head
-        (recur tail (* penalty depth-penalty)
+        (recur tail 
                (+ score
                   (Math/pow (Math/abs head) general-power)))
-        [score  match]))))
+        [score tiebreak]))))
 
 (defn nses-for-ns
   "Returns a map of string->namespace mappings for a given
@@ -136,13 +136,17 @@
     (map (juxt identity (constantly {:class true})))
     (fuzzy-match-pairs pattern)
     (map (fn [[score class-name desc]]
-           (let [class (ns-resolve ns (symbol class-name))]
-             [score class-name
-              (assoc desc
-                     :arglists (->> (.getConstructors class)
-                                 (map extract-param-types)
-                                 (set)
-                                 (sort)))])))))
+           [score class-name
+            (try
+              (let [class (ns-resolve ns (symbol class-name))
+                    arglists (->> (.getConstructors class)
+                               (map extract-param-types)
+                               (set)
+                               (sort))]
+                (assoc desc
+                       :arglists arglists))
+              (catch java.lang.NoClassDefFoundError _
+                desc))]))))
 
 (defn methods->completions
   "Takes a seq of Method objects and returns a seq of pairs
@@ -175,8 +179,8 @@
                                       [(str \. k) v]))))))
         matches (fuzzy-match-pairs compiled-pattern candidates)
         class-matches (class-matches ns pattern)
-        sorted (sort-by (fn [[score n]]
-                          (score-match score n))
+        sorted (sort-by (fn [[score name]]
+                          (score-match score name))
                         (concat class-matches matches))]
     sorted))
 
@@ -217,7 +221,7 @@
                                                              [(str class-name \/ k) v])))]
                                         (fuzzy-match-pairs whole-pattern
                                                            (concat fields methods))))))
-        sorted (sort-by (fn [[score n]] (score-match score n))
+        sorted (sort-by (fn [[score name]] (score-match score name))
                         (concat candidate-members candidate-vars))]
     sorted))
 
@@ -305,6 +309,8 @@
       `(let ~(vec (mapcat #(list % `(*locals* '~%)) (keys locals)))
          ~form))))
 
+(def repl-timeout-ms 1000)
+
 (defn eval-with-state-and-locals
   "Evaluates a form with a given state and local binding. The local binding
   is the return value of using the `local-bindings` macro at the place
@@ -324,32 +330,36 @@
               *2 (:*2 state)
               *3 (:*3 state)
               *e (:*e state)]
-      (let [ex (atom nil)
-            result (try
-                     (in-ns (:ns state))
-                     (doto (eval-with-locals locals form)
-                       pprint)
-                     (catch Throwable t
-                       ;`::continue` is a special case for debugging
-                       (if (contains? (ex-data t) ::continue)
-                         (throw t)
-                         (do
-                           (doto (clojure.main/repl-exception t)
-                             (.printStackTrace *err*))
-                           (reset! ex t)))))]
-        (->
-          (if-let [e @ex]
-            (assoc state :*e e :result ::error)
-            (assoc state
-                   :result result
-                   :*1 result
-                   :*2 *1
-                   :*3 *2))
-          (assoc 
-            :ns (ns-name *ns*)
-            :repl-depth *repl-depth*
-            :out (str out-writer)
-            :err (str err-writer)))))))
+      (with-redefs [clojure.core/print-sequential reply.hacks.printing/print-sequential
+                    clojure.repl/pst clj-stacktrace.repl/pst] 
+        (let [ex (atom nil)
+              repl-thread (atom (Thread/currentThread))
+              result (try
+                       (in-ns (:ns state))
+                       (doto (eval-with-locals locals form)
+                         pprint)
+                       (catch Throwable t
+                         ;`::continue` is a special case for debugging
+                         (if (contains? (ex-data t) ::continue)
+                           (throw t)
+                           (do
+                             (doto (clojure.main/repl-exception t)
+                               (pst)) 
+                             (reset! ex t)))))]
+          (reset! repl-thread nil) 
+          (->
+            (if-let [e @ex]
+              (assoc state :*e e :result ::error)
+              (assoc state
+                     :result result
+                     :*1 result
+                     :*2 *1
+                     :*3 *2))
+            (assoc 
+              :ns (ns-name *ns*)
+              :repl-depth *repl-depth*
+              :out (str out-writer)
+              :err (str err-writer))))))))
 
 ;These dynamic vars hold the thread-local atoms that store the input
 ;and output promises for the repl. They hold atoms so that all reads/writes
@@ -460,5 +470,5 @@
   [repl form]
   (let [{:keys [input output id]} (@repls repl)
         _ (deliver @input form)
-        result (deref @output 8000 {:err "Repl thread timed out"})]
+        result (deref @output 9500 {:out "Critical timeout-repl has been lost"})]
     result))

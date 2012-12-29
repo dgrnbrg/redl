@@ -227,11 +227,11 @@
   ;Ensure continue gives sane error message
   (expect #"Cannot call continue when not in a break statement!"
           (-> (repl-eval my-repl '(continue))
-            :err))
+            :out))
   
   (expect #"Cannot call continue when not in a break statement!"
           (-> (repl-eval my-repl '(continue))
-            :err)))
+            :out)))
 
 ;Now, we try interleaving 2 repls to confirm no disruption occurs
 (let [repl1 (make-repl)
