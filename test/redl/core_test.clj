@@ -1,6 +1,6 @@
 (ns redl.core-test
   (:use expectations
-        redl.core)
+        [redl complete core])
   (:import java.lang.Thread))
 
 (expect
