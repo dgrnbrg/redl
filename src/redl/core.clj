@@ -6,6 +6,9 @@
         [complete.core :only [top-level-classes nested-classes]]
         [clojure.pprint :only [pprint]]))
 
+;This var determines whether repl results are `println`ed or `pprint`ed.
+(def *pretty-print* (atom true))
+
 ;This var tracks how many nested breaks there are active
 (def ^:dynamic *repl-depth* 0)
 ;This var is used by the eval-with-locals subsystem
@@ -59,7 +62,7 @@
               result (try
                        (in-ns (:ns state))
                        (doto (eval-with-locals locals form)
-                         pprint)
+                         ((if @*pretty-print* pprint println)))
                        (catch Throwable t
                          ;`::continue` is a special case for debugging
                          (if (contains? (ex-data t) ::continue)
