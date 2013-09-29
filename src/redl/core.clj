@@ -9,6 +9,9 @@
 ;This var determines whether repl results are `println`ed or `pprint`ed.
 (def *pretty-print* (atom true))
 
+;This var determines the repl timeout
+(def repl-timeout-ms (atom 9500))
+
 ;This var tracks how many nested breaks there are active
 (def ^:dynamic *repl-depth* 0)
 ;This var is used by the eval-with-locals subsystem
@@ -33,8 +36,6 @@
     (eval
       `(let ~(vec (mapcat #(list % `(*locals* '~%)) (keys locals)))
          ~form))))
-
-(def repl-timeout-ms 1000)
 
 (defn eval-with-state-and-locals
   "Evaluates a form with a given state and local binding. The local binding
@@ -195,5 +196,5 @@
   [repl form]
   (let [{:keys [input output id]} (@repls repl)
         _ (deliver @input form)
-        result (deref @output 9500 {:out "Critical timeout-repl has been lost"})]
+        result (deref @output @repl-timeout-ms {:out "Critical timeout-repl has been lost"})]
     result))
