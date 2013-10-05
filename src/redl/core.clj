@@ -66,7 +66,7 @@
               repl-thread (atom (Thread/currentThread))
               result (try
                        (in-ns (:ns state))
-                       (doto (eval-with-locals locals form)
+                       (doto (eval-with-locals locals (read-string form))
                          ((if @pretty-print pprint println)))
                        (catch Throwable t
                          ;`::continue` is a special case for debugging
@@ -233,15 +233,15 @@
         (let [form (async/<!! in)]
           (if busy
             ;; When busy, try doing an op
-            (condp = (if (= (first form) `do) (second form) form)
-              'wait (let [[busy state] (do-wait latest-state @worker-out out)]
+            (condp = form
+              "wait" (let [[busy state] (do-wait latest-state @worker-out out)]
                       (recur busy state))
-              'stack (do (do-stacktrace latest-state @thread out)
+              "stack" (do (do-stacktrace latest-state @thread out)
                          (recur true latest-state))
-              'interrupt (do (.interrupt @thread) 
+              "interrupt" (do (.interrupt @thread) 
                              (let [[busy state] (do-wait latest-state @worker-out out)]
                                (recur busy state)))
-              'stop (do (async/>!! out (assoc latest-state
+              "stop" (do (async/>!! out (assoc latest-state
                                               :out "Stopped thread, creating new worker..."
                                               :err ""
                                               :repl-depth 0))
