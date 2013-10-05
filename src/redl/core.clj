@@ -1,16 +1,20 @@
 (ns redl.core
   (:require clojure.main
             reply.hacks.printing
+            [clojure.string :as str]
+            [clojure.core.async :as async]
             clj-stacktrace.repl) 
   (:use [clojure.repl :only [pst]]
         [complete.core :only [top-level-classes nested-classes]]
         [clojure.pprint :only [pprint]]))
 
-;This var determines whether repl results are `println`ed or `pprint`ed.
-(def *pretty-print* (atom true))
+(defn- dbg
+  [& strs]
+  (.println System/out (str/join " " strs))
+  (.flush System/out))
 
-;This var determines the repl timeout
-(def repl-timeout-ms (atom 9500))
+;This var determines whether repl results are `println`ed or `pprint`ed.
+(def pretty-print (atom true))
 
 ;This var tracks how many nested breaks there are active
 (def ^:dynamic *repl-depth* 0)
@@ -63,7 +67,7 @@
               result (try
                        (in-ns (:ns state))
                        (doto (eval-with-locals locals form)
-                         ((if @*pretty-print* pprint println)))
+                         ((if @pretty-print pprint println)))
                        (catch Throwable t
                          ;`::continue` is a special case for debugging
                          (if (contains? (ex-data t) ::continue)
@@ -87,12 +91,8 @@
               :out (str out-writer)
               :err (str err-writer))))))))
 
-;These dynamic vars hold the thread-local atoms that store the input
-;and output promises for the repl. They hold atoms so that all reads/writes
-;can be done as late as possible, which allows for debuggers further down
-;the stack to temporarily take over the IO.
-(def ^:dynamic repl-input)
-(def ^:dynamic repl-output)
+(def ^:dynamic *repl-input*)
+(def ^:dynamic *repl-output*)
 
 (defn late-bound-repl-loop
   "This creates a repl loop with the given initial state and, optionally,
@@ -103,23 +103,10 @@
    (late-bound-repl-loop state {}))
   ([state locals]
    (loop [state state]
-     (let [state' (eval-with-state-and-locals @@repl-input state locals)]
-       (deliver @repl-output state')
-       (reset! repl-input (promise))
-       (reset! repl-output (promise))
+     (let [state' (eval-with-state-and-locals
+                    (async/<!! *repl-input*) state locals)]
+       (async/>!! *repl-output* state')
        (recur state')))))
-
-(defn repl-entry-point
-  "Creates a no-arg function that, when invoked, becomes the repl, and returns
-  that function along with the input/output atom pair.
-
-  When an input is delivered, wait on the output promise to get a
-  map containing the evaluation results."
-  [ns]
-  (binding [repl-input (atom (promise))
-            repl-output (atom (promise))]
-    [(bound-fn* #(late-bound-repl-loop {:ns ns}))
-     repl-input repl-output]))
 
 (defn break*
   "Invoke this to drop into a new sub-repl, which
@@ -128,12 +115,10 @@
   [locals]
   (try
     (binding [*repl-depth* (inc *repl-depth*)]
-      (deliver @repl-output {:out "Encountered break, waiting for input..."
-                             :err ""
-                             :ns (ns-name *ns*)
-                             :repl-depth *repl-depth*})
-      (reset! repl-input (promise)) 
-      (reset! repl-output (promise)) 
+      (async/>!! *repl-output* {:out "Encountered break, waiting for input..."
+                                :err ""
+                                :ns (ns-name *ns*)
+                                :repl-depth *repl-depth*})
       (late-bound-repl-loop {:ns (ns-name *ns*)
                              :*1 *1 :*2 *2 :*3 *3 :*e *e}
                             locals))
@@ -170,31 +155,121 @@
      (throw (ex-info "Cannot call continue when not in a break statement!" {}))
      (throw (ex-info "" {::continue value})))))
 
-;This tracks the active repls and allows for them to have new ids generated
-(def repls (atom {}))
-(def repl-id (atom 0))
+(defn eval-worker
+  "Creates an eval worker thread that can transfer its IO control
+   down the stack. Returns `[in out thread]`, where `in` and `out`
+   are the channels to send and recieve messages, and `thread` is
+   a promise containing the actual worked Thread, for debugging."
+  [ns]
+  (let [in (async/chan)
+        out (async/chan)
+        thread (promise)]
+    ;;TODO: make this thread called "repl-%id"?
+    (async/thread
+      (deliver thread (Thread/currentThread))
+      (binding [*repl-input* in
+                *repl-output* out]
+        (late-bound-repl-loop {:ns ns})))
+    [in out thread]))
+
+(def supervisor-ids (atom 0))
+(def supervisors (atom {}))
+
+(defn do-wait
+  [latest-state worker-out out]
+  (let [t (async/timeout 1000)]
+    (async/alt!!
+      worker-out
+      ([state]
+       (dbg "got result from worker")
+       (async/>!! out state)
+       [false state])
+      t
+      ([_]
+       (dbg "got timeout from worker")
+       (async/>!! out (assoc latest-state
+                             :out "Worker has not yet finished computation. Try meta commands [wait, stack, interrupt, stop, help]."
+                             :err ""))
+       [true latest-state]))))
+
+(defn do-stacktrace
+  [state ^Thread thread out]
+  (let [stacktrace (.getStackTrace thread)
+        pretty (with-out-str
+                 (doseq [ste stacktrace]
+                   (clojure.stacktrace/print-trace-element ste)
+                   (println)))]
+    (async/>!! out (assoc state
+                          :out (str "Stack trace of thread: "
+                                    (.getName thread) "\n\n"
+                                    pretty)
+                          :err ""))))
+
+(defn print-help
+  [state out]
+  (async/>!! out (assoc state
+                        :out "Enter wait, stack, interrupt, or stop"
+                        :err "")))
+(defn eval-supervisor
+  "Creates an eval supervisor thread that will create and drive
+   an eval-worker. If the worker becomes unresponsive, the
+   supervisor allows meta-control of the worker (stop, threadump, wait).
+
+   Returns the supervisor id, which allows it to be controlled in
+   the repl."
+  [ns]
+  (let [id (swap! supervisor-ids inc)
+        in (async/chan)
+        out (async/chan)
+        [worker-in worker-out thread :as worker] (eval-worker ns)]
+    (swap! supervisors assoc id [in out])
+    (async/thread
+      (loop [busy false
+             latest-state {:ns ns}]
+        (dbg "super waiting for input")
+        (let [form (async/<!! in)]
+          (dbg "super got input" form)
+          (if busy
+            ;; When busy, try doing an op
+            (do (dbg "busy, interpretting") (condp = (if (= (first form) `do) (second form) form)
+              'wait (let [[busy state] (do-wait latest-state worker-out out)]
+                      (recur busy state))
+              'stack (do (do-stacktrace latest-state @thread out)
+                         (recur true latest-state))
+              'interrupt (do (.interrupt @thread) 
+                             (let [[busy state] (do-wait latest-state worker-out out)]
+                               (recur busy state)))
+              'stop (do (async/>!! out (assoc latest-state
+                                              :out "Stopped thread; creating new worker..."
+                                              :err ""))
+                        (.stop @thread) 
+                        ;; Clear out
+                        (swap! supervisors dissoc id)
+                        ;; Make a new worker thread
+                        #_(recur true latest-state (eval-worker ns)))
+              (do (print-help latest-state out)
+                  (recur true latest-state))))
+            ;; Not busy, do a new eval
+            (do (dbg "not busy, sending to worker") (async/>!! worker-in form) (dbg "not busy, sent to worker")
+                (let [[busy state] (do-wait latest-state worker-out out)]
+                  (dbg "finished waiting for worker" busy state worker)
+                  (recur busy state)))))))
+    id))
 
 (defn make-repl
-  "Returns the id of a newly-created repl Thread. That repl will start
-  in the given namespace, or `user` if none is provided."
   ([]
    (make-repl 'user))
   ([ns]
-   (let [my-id (swap! repl-id inc)
-         [replf input output] (repl-entry-point ns)
-         thread (doto (Thread. replf)
-                  (.setName (str "redl-" my-id))
-                  .start)
-         data {:input input
-               :output output
-               :id my-id}]
-     (swap! repls assoc my-id data)
-     my-id)))
+   (eval-supervisor ns)))
 
 (defn repl-eval
   "Takes a repl id and a form, and evaluates that form on the given repl."
   [repl form]
-  (let [{:keys [input output id]} (@repls repl)
-        _ (deliver @input form)
-        result (deref @output @repl-timeout-ms {:out "Critical timeout-repl has been lost"})]
-    result))
+  (if-let [[input output] (@supervisors repl)]
+    (do (async/>!! input form)
+        (async/<!! output))
+    (do
+      {:ns 'user
+       :out "This repl doesn't exist. You must start a new one."
+       :err ""})))
+
