@@ -271,7 +271,8 @@
   [repl form]
   (if-let [[input output] (@supervisors repl)]
     (do (async/>!! input form)
-        (async/<!! output))
+        (-> (async/<!! output)
+            (select-keys [:out :err :repl-depth :ns])))
     (do
       {:ns 'user
        :out "This repl doesn't exist. You must start a new one."
