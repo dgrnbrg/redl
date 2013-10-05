@@ -170,7 +170,7 @@
       (binding [*repl-input* in
                 *repl-output* out]
         (late-bound-repl-loop {:ns ns})))
-    [in out thread]))
+    [in out @thread]))
 
 (def supervisor-ids (atom 0))
 (def supervisors (atom {}))
@@ -181,12 +181,10 @@
     (async/alt!!
       worker-out
       ([state]
-       (dbg "got result from worker")
        (async/>!! out state)
        [false state])
       t
       ([_]
-       (dbg "got timeout from worker")
        (async/>!! out (assoc latest-state
                              :out "Worker has not yet finished computation. Try meta commands [wait, stack, interrupt, stop, help]."
                              :err ""))
@@ -221,38 +219,44 @@
   (let [id (swap! supervisor-ids inc)
         in (async/chan)
         out (async/chan)
-        [worker-in worker-out thread :as worker] (eval-worker ns)]
+        [worker-in' worker-out' thread' :as worker] (eval-worker ns)
+        ;; We'll store the worker's info in an atom, so that we can
+        ;; change it during a hard stop of the thread.
+        ;; This broke when I tried to pass it in the loop/recur
+        worker-in (atom worker-in')
+        worker-out (atom worker-out')
+        thread (atom thread')]
     (swap! supervisors assoc id [in out])
     (async/thread
       (loop [busy false
              latest-state {:ns ns}]
-        (dbg "super waiting for input")
         (let [form (async/<!! in)]
-          (dbg "super got input" form)
           (if busy
             ;; When busy, try doing an op
-            (do (dbg "busy, interpretting") (condp = (if (= (first form) `do) (second form) form)
-              'wait (let [[busy state] (do-wait latest-state worker-out out)]
+            (condp = (if (= (first form) `do) (second form) form)
+              'wait (let [[busy state] (do-wait latest-state @worker-out out)]
                       (recur busy state))
               'stack (do (do-stacktrace latest-state @thread out)
                          (recur true latest-state))
               'interrupt (do (.interrupt @thread) 
-                             (let [[busy state] (do-wait latest-state worker-out out)]
+                             (let [[busy state] (do-wait latest-state @worker-out out)]
                                (recur busy state)))
               'stop (do (async/>!! out (assoc latest-state
-                                              :out "Stopped thread; creating new worker..."
-                                              :err ""))
+                                              :out "Stopped thread, creating new worker..."
+                                              :err ""
+                                              :repl-depth 0))
                         (.stop @thread) 
-                        ;; Clear out
-                        (swap! supervisors dissoc id)
                         ;; Make a new worker thread
-                        #_(recur true latest-state (eval-worker ns)))
+                        (let [[worker-in' worker-out' thread' :as worker] (eval-worker (:ns latest-state))]
+                          (reset! worker-in worker-in')
+                          (reset! worker-out worker-out')
+                          (reset! thread thread'))
+                        (recur false {:ns (:ns latest-state)}))
               (do (print-help latest-state out)
-                  (recur true latest-state))))
+                  (recur true latest-state)))
             ;; Not busy, do a new eval
-            (do (dbg "not busy, sending to worker") (async/>!! worker-in form) (dbg "not busy, sent to worker")
-                (let [[busy state] (do-wait latest-state worker-out out)]
-                  (dbg "finished waiting for worker" busy state worker)
+            (do (async/>!! @worker-in form)
+                (let [[busy state] (do-wait latest-state @worker-out out)]
                   (recur busy state)))))))
     id))
 
