@@ -7,5 +7,5 @@
                  [clojure-complete "0.2.2"]
                  [reply "0.1.2"]
                  [clj-stacktrace "0.2.5"]
-                 [core.async "0.1.0-SNAPSHOT"]
+                 [org.clojure/core.async "0.1.242.0-44b1e3-alpha"]
                  [expectations "1.4.17"]]) 
