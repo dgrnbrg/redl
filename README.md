@@ -73,7 +73,7 @@ You'll need to clone this repository, then run `lein install` to include it in y
 local maven cache. Next, you'll want to add the following keys to your `.lein/profiles.clj`:
 
 - `:injections [(require '[redl core complete])]` ensure that redl is loaded on jvm startup
-- `:dependencies [[redl "0.1.0"]]` ensures that redl is available on the classpath
+- `:dependencies [[redl "0.2.0"]]` ensures that redl is available on the classpath
 
 ## License
 
