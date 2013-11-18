@@ -1,5 +1,6 @@
 (ns redl.core
   (:require clojure.main
+            clojure.stacktrace
             reply.hacks.printing
             [clojure.string :as str]
             [clojure.core.async :as async]
