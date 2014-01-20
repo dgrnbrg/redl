@@ -3,6 +3,7 @@
             reply.hacks.printing
             [clojure.string :as str]
             [clojure.core.async :as async]
+            clojure.stacktrace
             clj-stacktrace.repl) 
   (:use [clojure.repl :only [pst]]
         [complete.core :only [top-level-classes nested-classes]]
