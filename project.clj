@@ -1,4 +1,4 @@
-(defproject redl "0.2.2-SNAPSHOT"
+(defproject redl "0.2.2"
   :description "Read Eval Debug Loop"
   :url "http://example.com/FIXME"
   :license {:name "Eclipse Public License"
