@@ -27,6 +27,8 @@
             (pprint arg)
             (println arg)))))
 
+;This vars tracks whether we're currently trying to step out of a break
+(def ^:dynamic *escape-target*)
 ;This var tracks how many nested breaks there are active
 (def ^:dynamic *repl-depth* 0)
 ;This var is used by the eval-with-locals subsystem
@@ -80,8 +82,9 @@
                        (doto (eval-with-locals locals (read-string form))
                          (@print-fn))
                        (catch Throwable t
-                         ;`::continue` is a special case for debugging
-                         (if (contains? (ex-data t) ::continue)
+                         ;`::continue` and `::step-out` are special cases for debugging
+                         (if (or (contains? (ex-data t) ::continue)
+                                 (contains? (ex-data t) ::step-out))
                            (throw t)
                            (do
                              (doto (clojure.main/repl-exception t)
@@ -117,6 +120,8 @@
      (let [state' (eval-with-state-and-locals
                     (async/<!! *repl-input*) state locals)]
        (async/>!! *repl-output* state')
+       (when (<= @*escape-target* *repl-depth*)
+         (reset! *escape-target* nil))
        (recur state')))))
 
 (defn break*
@@ -126,18 +131,23 @@
   [locals]
   (when-not (bound? #'*repl-output*)
     (throw (ex-info "You cannot call break outside of a REDL Repl. Currently, these are only supported as a Vim plugin. If you or someone you know can help @dgrnbrg understand nrepl/cider, he'd like to make it available in Emacs and Reply as well!" {})))
-  (try
-    (binding [*repl-depth* (inc *repl-depth*)]
-      (async/>!! *repl-output* {:out "Encountered break, waiting for input..."
-                                :err ""
-                                :ns (ns-name *ns*)
-                                :repl-depth *repl-depth*})
-      (late-bound-repl-loop {:ns (ns-name *ns*)
-                             :*1 *1 :*2 *2 :*3 *3 :*e *e}
-                            locals))
-    (catch clojure.lang.ExceptionInfo ex
-      (assert (contains? (ex-data ex) ::continue))
-      (::continue (ex-data ex)))))
+  (if @*escape-target*
+    ::no-arg
+    (try
+      (binding [*repl-depth* (inc *repl-depth*)]
+        (async/>!! *repl-output* {:out "Encountered break, waiting for input..."
+                                  :err ""
+                                  :ns (ns-name *ns*)
+                                  :repl-depth *repl-depth*})
+        (late-bound-repl-loop {:ns (ns-name *ns*)
+                               :*1 *1 :*2 *2 :*3 *3 :*e *e}
+                              locals))
+      (catch clojure.lang.ExceptionInfo ex
+        (if-let [depth (::step-out (ex-data ex))]
+          (when (> *repl-depth* depth)
+            (throw ex))
+          (do (assert (contains? (ex-data ex) ::continue))
+              (::continue (ex-data ex))))))))
 
 (defmacro break
   "Invoke this to drop into a new sub-repl. It will automatically capture
@@ -168,6 +178,20 @@
      (throw (ex-info "Cannot call continue when not in a break statement!" {}))
      (throw (ex-info "" {::continue value})))))
 
+(defn step-out
+  "Invoke this from inside a debug repl to go to the requested debug level.
+   Calling this with `0` as an argument will get you out of all debug levels.
+   Defaults to getting you out of out debug level."
+  ([]
+   (step-out (dec *repl-depth*)))
+  ([depth]
+   (when (neg? depth)
+     (throw (ex-info "Cannot call step-out to a negative depth!" {})))
+   (when (>= depth *repl-depth*)
+     (throw (ex-info "Cannot call step-out to depth that isn't less than the current depth!" {})))
+   (reset! *escape-target* depth)
+   (throw (ex-info "" {::step-out depth}))))
+
 (defn eval-worker
   "Creates an eval worker thread that can transfer its IO control
    down the stack. Returns `[in out thread]`, where `in` and `out`
@@ -181,7 +205,8 @@
     (async/thread
       (deliver thread (Thread/currentThread))
       (binding [*repl-input* in
-                *repl-output* out]
+                *repl-output* out
+                *escape-target* (atom nil)]
         (late-bound-repl-loop {:ns ns})))
     [in out @thread]))
 
