@@ -1,8 +1,9 @@
-(defproject redl "0.2.3"
+(defproject redl "0.2.4-SNAPSHOT"
   :description "Read Eval Debug Loop"
-  :url "http://example.com/FIXME"
+  :url "http://github.com/dgrnbrg/vim-redl"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
+  :deploy-repositories  [["releases" :clojars]]
   :dependencies [[org.clojure/clojure "1.4.0"]
                  [clojure-complete "0.2.2"]
                  [reply "0.1.2"]
