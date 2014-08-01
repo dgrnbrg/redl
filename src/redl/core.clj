@@ -14,8 +14,18 @@
   (.println System/out (str/join " " strs))
   (.flush System/out))
 
-;This var determines whether repl results are `println`ed or `pprint`ed.
-(def pretty-print (atom true))
+(def pretty-print
+  "DEPRPECATED; set `print-fn` directly.
+   This var determines whether repl results are `println`ed or `pprint`ed."
+  (atom true))
+
+(def print-fn
+  "Allows you to configure what function is used to print the result of computations.
+   This function should take one argument, the expression's value."
+  (atom (fn [arg]
+          (if @pretty-print
+            (pprint arg)
+            (println arg)))))
 
 ;This var tracks how many nested breaks there are active
 (def ^:dynamic *repl-depth* 0)
@@ -68,7 +78,7 @@
               result (try
                        (in-ns (:ns state))
                        (doto (eval-with-locals locals (read-string form))
-                         ((if @pretty-print pprint println)))
+                         (@print-fn))
                        (catch Throwable t
                          ;`::continue` is a special case for debugging
                          (if (contains? (ex-data t) ::continue)
