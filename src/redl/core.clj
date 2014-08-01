@@ -124,6 +124,8 @@
   can return into the parent repl at any time. Must supply
   locals, that will be in scope in the new subrepl."
   [locals]
+  (when-not (bound? #'*repl-output*)
+    (throw (ex-info "You cannot call break outside of a REDL Repl. Currently, these are only supported as a Vim plugin. If you or someone you know can help @dgrnbrg understand nrepl/cider, he'd like to make it available in Emacs and Reply as well!" {})))
   (try
     (binding [*repl-depth* (inc *repl-depth*)]
       (async/>!! *repl-output* {:out "Encountered break, waiting for input..."
