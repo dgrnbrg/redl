@@ -49,7 +49,8 @@ you'll drop into a sub-repl. This sub-repl has the same local scope as the `brea
 and can be used to inspect and explode in the middle of a function evaluation. When you're
 ready to return, invoke `continue`. You can have `break` return its optional invoke if you
 invoke `continue` with no arguments, or you can have `break` return something else by invoking
-`continue` with an argument. See the tests for more examples, or below for a sample session.
+`continue` with an argument. You can also use `step-out` to move to a higher repl level,
+to exit loops and nested loops quickly. See the tests for more examples, or below for a sample session.
 
     redl.core=> (+ 1 2)
     3
