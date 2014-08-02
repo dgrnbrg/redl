@@ -1,4 +1,4 @@
-(defproject redl "0.2.4-SNAPSHOT"
+(defproject redl "0.2.4"
   :description "Read Eval Debug Loop"
   :url "http://github.com/dgrnbrg/vim-redl"
   :license {:name "Eclipse Public License"
